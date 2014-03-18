@@ -14,6 +14,9 @@ import Control.Concurrent
 import Network.Socket
 import Network.Sendfile
 
+import Data.Time
+import System.CPUTime
+
 main = withSocketsDo $ do
   HoofOptions {  path = path,
                 count = count,
@@ -39,26 +42,55 @@ startServer path count port = do
   bindSocket sock (SockAddrInet (fromIntegral port) iNADDR_ANY)
   listen sock count
   putStrLn $ "Listening on 127.0.0.1 port " ++ show port
+  
+  -- initialize the threads mvar with the amount of file transfers
+  -- possible; this mvar assures that the main thread only terminates,
+  -- if all file transfers are finished
+  threads <- newMVar count
+  
+  -- initialize the done mvar with empty, so the main thread blocks
+  -- when calling takeMVar 
   done <- newEmptyMVar
-  serveFile sock path count done
+  
+  -- start serving the file
+  serveFile sock path threads done count
 
-serveFile :: Socket -> String -> Int -> MVar () -> IO ()
-serveFile _ _ 0 _ = return ()
-serveFile sock path count done = do
-  (client, sockAddr) <- accept sock
-  forkIO $ respond client done
-  takeMVar done
-  serveFile sock path (count - 1) done
+serveFile :: Socket -> String -> MVar Int -> MVar () -> Int -> IO ()
+serveFile _ _ _ done 0 = takeMVar done
+serveFile sock path threads done count = do
+  (client, addr) <- accept sock
+  forkIO $ respond client threads done
+  serveFile sock path threads done (count - 1)
   where
     response fs = [
         BS.pack $ "HTTP/1.1 200 OK\r\n"
       , BS.pack $ "Content-Length: " ++ (show fs) ++ "\r\n"
       , BS.pack $ "Content-Type: application/octet-stream\r\n\r\n" ]
-    respond client done = do
+    respond client threads done = do
       fileHandle <- openFile path ReadMode
       stat <- getFileStatus path
       peer <- getPeerName client
+      
       putStrLn $ "Sending file to " ++ show peer
+      
       -- what does the fourth parameter even do? i have no idea... O.O
-      sendfileWithHeader client path EntireFile (return ()) (response $ fileSize stat)
-      putMVar done ()
+      sendfileWithHeader client path EntireFile (putStrLn "test") (response $ fileSize stat)
+      
+      -- delay for a second or so, because sendfileWithHeader does
+      -- not finish properly though it is a blocking call; i have no
+      -- idea why this has to be
+      threadDelay 1000000
+      
+      -- take the threads mvar for mutual exclusion; other take
+      -- operations will block until threads is not empty anymore
+      leftThreads <- takeMVar threads
+      
+      -- put the threads mvar with decremented value because this
+      -- thread will finish
+      putMVar threads (leftThreads - 1)
+      
+      -- if there are no threads left serving files, tell the main
+      -- thread that it may finish
+      if leftThreads - 1 == 0 
+      then putMVar done ()
+      else return ()
