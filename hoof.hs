@@ -56,10 +56,19 @@ startServer path count port = do
   serveFile sock path threads done count
 
 serveFile :: Socket -> String -> MVar Int -> MVar () -> Int -> IO ()
-serveFile _ _ _ done 0 = takeMVar done
+serveFile _ _ _ done 0 =
+  -- wait until done is not empty anymore, in other words untile all
+  -- threads have finished
+  takeMVar done
 serveFile sock path threads done count = do
+  -- accept clients
   (client, addr) <- accept sock
+  
+  -- create a thread to transfer the file concurrently
   forkIO $ respond client threads done
+  
+  -- loop this method until the amount of files specified by count
+  -- has been served
   serveFile sock path threads done (count - 1)
   where
     response fs = [
@@ -67,8 +76,13 @@ serveFile sock path threads done count = do
       , BS.pack $ "Content-Length: " ++ (show fs) ++ "\r\n"
       , BS.pack $ "Content-Type: application/octet-stream\r\n\r\n" ]
     respond client threads done = do
+      -- open the file
       fileHandle <- openFile path ReadMode
+      
+      -- retrieve file information
       stat <- getFileStatus path
+      
+      -- retrieve client information
       peer <- getPeerName client
       
       putStrLn $ "Sending file to " ++ show peer
@@ -90,7 +104,7 @@ serveFile sock path threads done count = do
       putMVar threads (leftThreads - 1)
       
       -- if there are no threads left serving files, tell the main
-      -- thread that it may finish
+      -- thread that it may finish, otherwise do nothing
       if leftThreads - 1 == 0 
       then putMVar done ()
       else return ()
