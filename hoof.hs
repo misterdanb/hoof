@@ -1,47 +1,52 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
-import System.Environment
 import System.IO
 import System.Posix
 import System.Console.CmdArgs
 import System.Console.GetOpt
 import qualified Data.ByteString.Char8 as BS
-import Data.Word
-import Data.Bits
-import Control.Monad
-import Control.Monad.Error
 import Control.Concurrent
 import Network.Socket
 import Network.Sendfile
 
-import Data.Time
-import System.CPUTime
-
 main = withSocketsDo $ do
-  HoofOptions {  path = path,
-                count = count,
-                 port = port } <- cmdArgsRun parseOptions
+  Hoof { path = path
+       , count = count
+       , port = port
+       , ip = ip } <- cmdArgsRun parseOptions
+  startServer path count port ip
 
-  startServer path count port
-
-data HoofOptions = HoofOptions {
+data Hoof = Hoof {
     path  :: String
   , count :: Int
-  , port  :: Int } deriving (Show, Data, Typeable)
+  , port  :: Int
+  , ip    :: Int } deriving (Show, Data, Typeable)
 
-parseOptions = cmdArgsMode $ HoofOptions
-  { path  = "hoof"  &= argPos 0 &= typ "PATH"
-  , count = 1       &= name "c" &= help "Amount of possible downloads"
-  , port  = 1337    &= name "p" &= help "Port to serve on" }
+parseOptions = cmdArgsMode $ Hoof
+  { path  = "hoof" &= argPos 0 &= typ "PATH"
+  , count = 1      &= name "c" &= help "Amount of possible downloads"
+  , port  = 1337   &= name "p" &= help "Port to serve on"
+  , ip    = 4      &= name "i" &= help "IP version to be used" }
   &= summary "Hoof 0.1 - 20% cooler than woof."
 
-startServer :: String -> Int -> Int -> IO ()
-startServer path count port = do
+startServer :: String -> Int -> Int -> Int -> IO ()
+startServer path count port 4 = do
   sock <- socket AF_INET Stream 0
   setSocketOption sock ReuseAddr 1
   bindSocket sock (SockAddrInet (fromIntegral port) iNADDR_ANY)
-  listen sock count
   putStrLn $ "Listening on 127.0.0.1 port " ++ show port
+  listenOnSocket path count port sock
+startServer path count port 6 = do
+  sock <- socket AF_INET6 Stream 0
+  setSocketOption sock ReuseAddr 1
+  bindSocket sock (SockAddrInet6 (fromIntegral port) 0 iN6ADDR_ANY 0)
+  putStrLn $ "Listening on ::1 port " ++ show port
+  listenOnSocket path count port sock
+startServer _ _ _ _ = putStrLn "This IP version is not supported."
+  
+listenOnSocket :: String -> Int -> Int -> Socket -> IO ()
+listenOnSocket path count port sock = do
+  listen sock count
   
   -- initialize the threads mvar with the amount of file transfers
   -- possible; this mvar assures that the main thread only terminates,
@@ -105,6 +110,5 @@ serveFile sock path threads done count = do
       
       -- if there are no threads left serving files, tell the main
       -- thread that it may finish, otherwise do nothing
-      if leftThreads - 1 == 0 
-      then putMVar done ()
+      if leftThreads - 1 == 0 then putMVar done ()
       else return ()
